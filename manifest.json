@@ -1,4 +1,5 @@
 {
+  "manifest_version": 1,
   "id": "com.yourdomain.bulk-item-importer",
   "name": "Bulk Item Importer",
   "version": "1.0.0",
