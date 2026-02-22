@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "manifest_version": 1,
   "author": "You",
-  "background_url": "https://blukworker.netlify.app/index.html",
   "icon": "/icon.svg",
-  "description": "Search your image library and bulk-insert items into the scene."
+  "description": "Search your image library and bulk-insert items into the scene.",
+  "action": {
+    "title": "Bulk Item Importer",
+    "icon": "/icon.svg",
+    "popover": "https://blukworker.netlify.app/index.html"
+  }
 }
