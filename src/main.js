@@ -1,4 +1,4 @@
-import OBR, { buildImage } from "https://cdn.jsdelivr.net/npm/@owlbear-rodeo/sdk@1.11.0/+esm";
+import OBR, { buildImage } from "https://unpkg.com/@owlbear-rodeo/sdk@1.11.0/dist/index.es.js";
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 const STORAGE_KEY = "bulk-item-importer:catalog";
