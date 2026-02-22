@@ -1,6 +1,306 @@
-document.getElementById("app").innerHTML = `
-  <div style="color: white; padding: 20px; font-family: sans-serif;">
-    <h2>✅ Extension is working!</h2>
-    <p>If you can see this, the page is loading correctly.</p>
-  </div>
-`;
+const OBR = window.OBR;
+
+// ─── Storage helpers ──────────────────────────────────────────────────────────
+const STORAGE_KEY = "bulk-item-importer:catalog";
+function loadCatalog() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
+  catch { return []; }
+}
+function saveCatalog(catalog) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(catalog));
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let catalog = loadCatalog();
+let selected = new Map();
+let searchQuery = "";
+let activeTab = "browse";
+let notification = null;
+let notifTimer = null;
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function showNotif(msg, type = "success") {
+  notification = { msg, type };
+  render();
+  clearTimeout(notifTimer);
+  notifTimer = setTimeout(() => { notification = null; render(); }, 3000);
+}
+
+function filteredCatalog() {
+  const q = searchQuery.toLowerCase().trim();
+  if (!q) return catalog;
+  return catalog.filter(item =>
+    item.name.toLowerCase().includes(q) ||
+    (item.tags && item.tags.toLowerCase().includes(q))
+  );
+}
+
+// ─── OBR Import ───────────────────────────────────────────────────────────────
+async function importSelected() {
+  if (selected.size === 0) { showNotif("No items selected!", "error"); return; }
+  try {
+    const viewport = await OBR.viewport.getTransform();
+    const vw = window.screen.width;
+    const vh = window.screen.height;
+    const sceneCenter = {
+      x: (-viewport.position.x + vw / 2) / viewport.scale,
+      y: (-viewport.position.y + vh / 2) / viewport.scale,
+    };
+    const ITEM_SIZE = 150, GAP = 10;
+    let totalCount = 0;
+    for (const [, qty] of selected) totalCount += qty;
+    const cols = Math.ceil(Math.sqrt(totalCount));
+    let col = 0, row = 0;
+    const startX = sceneCenter.x - ((cols - 1) * (ITEM_SIZE + GAP)) / 2;
+    const startY = sceneCenter.y - (Math.ceil(totalCount / cols) * (ITEM_SIZE + GAP)) / 2;
+    const items = [];
+    for (const [id, qty] of selected) {
+      const itemDef = catalog.find(c => c.id === id);
+      if (!itemDef) continue;
+      for (let i = 0; i < qty; i++) {
+        const x = startX + col * (ITEM_SIZE + GAP);
+        const y = startY + row * (ITEM_SIZE + GAP);
+        const w = ITEM_SIZE, h = ITEM_SIZE;
+        const item = OBR.scene.items.build({
+          type: "IMAGE",
+          image: { url: itemDef.url, width: w, height: h, mime: "image/png" },
+          grid: { dpi: 150, offset: { x: w / 2, y: h / 2 } },
+          position: { x, y },
+          name: itemDef.name,
+          layer: "PROP",
+          locked: false,
+        });
+        items.push(item);
+        col++;
+        if (col >= cols) { col = 0; row++; }
+      }
+    }
+    await OBR.scene.items.addItems(items);
+    showNotif(`✓ Added ${items.length} item${items.length !== 1 ? "s" : ""} to scene`);
+    selected.clear();
+    render();
+  } catch (err) {
+    console.error(err);
+    showNotif("Error: " + err.message, "error");
+  }
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+function render() {
+  document.getElementById("app").innerHTML = buildHTML();
+  attachEvents();
+}
+
+function escHtml(str = "") {
+  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function buildHTML() {
+  const items = filteredCatalog();
+  const totalSelected = [...selected.values()].reduce((a,b) => a+b, 0);
+  return `
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#1a1410;--bg2:#221c16;--bg3:#2c241c;--border:#3d3022;--gold:#c9a84c;--gold2:#e8c96d;--amber:#d4782a;--text:#e8dcc8;--text2:#a89878;--text3:#6b5a42;--red:#c0392b;--green:#2ecc71;--r:6px}
+    body{background:var(--bg);color:var(--text);font-family:'Crimson Pro',Georgia,serif;font-size:15px;overflow:hidden}
+    .app{display:flex;flex-direction:column;height:100vh;background:var(--bg);overflow:hidden}
+    .header{background:linear-gradient(135deg,var(--bg2),#1e160f);border-bottom:1px solid var(--border);padding:12px 14px 0;flex-shrink:0}
+    .header-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+    .title{font-family:'Cinzel',serif;font-size:14px;font-weight:700;color:var(--gold);letter-spacing:.08em;text-transform:uppercase;flex:1}
+    .badge{background:var(--amber);color:#fff;font-family:'Cinzel',serif;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px}
+    .badge.empty{background:var(--bg3);color:var(--text3)}
+    .tabs{display:flex}
+    .tab{padding:7px 16px;font-family:'Cinzel',serif;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .15s}
+    .tab:hover{color:var(--text2)}
+    .tab.active{color:var(--gold);border-bottom-color:var(--gold)}
+    .search-bar{padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+    .search-wrap{position:relative}
+    .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);pointer-events:none}
+    .search-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:7px 10px 7px 32px;color:var(--text);font-family:'Crimson Pro',serif;font-size:14px;outline:none}
+    .search-input:focus{border-color:var(--gold)}
+    .search-input::placeholder{color:var(--text3)}
+    .scroll-area{flex:1;overflow-y:auto;padding:10px 14px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+    .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;text-align:center;color:var(--text3);gap:10px}
+    .empty-icon{font-size:36px}
+    .empty-title{font-family:'Cinzel',serif;font-size:13px;color:var(--text2)}
+    .empty-sub{font-size:13px;line-height:1.5}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;transition:all .15s;position:relative}
+    .card:hover{border-color:var(--gold);transform:translateY(-1px)}
+    .card.selected{border-color:var(--gold);background:#2a1f0e;box-shadow:0 0 0 1px var(--gold)}
+    .img-wrap{aspect-ratio:1;background:var(--bg3);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+    .img-wrap img{width:100%;height:100%;object-fit:contain;padding:6px}
+    .check{position:absolute;top:4px;right:4px;width:20px;height:20px;background:var(--gold);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;color:#1a1410;font-weight:700;opacity:0;transition:opacity .15s}
+    .card.selected .check{opacity:1}
+    .card-info{padding:5px 7px 6px}
+    .card-name{font-family:'Cinzel',serif;font-size:10px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .card-tags{font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+    .qty{display:flex;align-items:center;gap:4px;margin-top:4px}
+    .qty-btn{width:20px;height:20px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;color:var(--text2);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .1s;flex-shrink:0}
+    .qty-btn:hover{background:var(--gold);color:#1a1410;border-color:var(--gold)}
+    .qty-num{flex:1;text-align:center;font-family:'Cinzel',serif;font-size:11px;font-weight:700;color:var(--gold2)}
+    .footer{border-top:1px solid var(--border);padding:10px 14px;background:var(--bg2);flex-shrink:0}
+    .footer-info{font-size:12px;color:var(--text3);margin-bottom:8px;text-align:center;font-style:italic}
+    .import-btn{width:100%;padding:10px;background:linear-gradient(135deg,#8b6914,var(--gold),#8b6914);border:none;border-radius:var(--r);color:#1a1410;font-family:'Cinzel',serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .2s}
+    .import-btn:hover{filter:brightness(1.15);transform:translateY(-1px)}
+    .import-btn:disabled{background:var(--bg3);color:var(--text3);cursor:not-allowed;transform:none}
+    .clear-btn{width:100%;margin-top:6px;padding:6px;background:none;border:1px solid var(--border);border-radius:var(--r);color:var(--text3);font-family:'Crimson Pro',serif;font-size:12px;cursor:pointer}
+    .clear-btn:hover{color:var(--text2)}
+    .manage-area{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+    .section-label{font-family:'Cinzel',serif;font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+    .add-form{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;display:flex;flex-direction:column;gap:8px}
+    .form-row{display:flex;gap:8px}
+    .form-input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:7px 10px;color:var(--text);font-family:'Crimson Pro',serif;font-size:14px;outline:none}
+    .form-input:focus{border-color:var(--gold)}
+    .form-input::placeholder{color:var(--text3)}
+    .add-btn{padding:7px 14px;background:var(--amber);border:none;border-radius:var(--r);color:#fff;font-family:'Cinzel',serif;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0}
+    .add-btn:hover{filter:brightness(1.15)}
+    .catalog-list{display:flex;flex-direction:column;gap:6px}
+    .catalog-row{display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:6px 8px}
+    .catalog-thumb{width:36px;height:36px;background:var(--bg3);border-radius:4px;object-fit:contain;padding:3px;flex-shrink:0}
+    .catalog-info{flex:1;min-width:0}
+    .catalog-name{font-family:'Cinzel',serif;font-size:11px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .catalog-tags{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .del-btn{width:26px;height:26px;background:none;border:1px solid transparent;border-radius:4px;color:var(--text3);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+    .del-btn:hover{background:rgba(192,57,43,.15);color:var(--red);border-color:var(--red)}
+    .notif{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);padding:8px 18px;border-radius:20px;font-family:'Cinzel',serif;font-size:11px;font-weight:600;z-index:100;animation:fadeUp .2s ease;white-space:nowrap}
+    .notif.success{background:#1a3a1a;color:var(--green);border:1px solid var(--green)}
+    .notif.error{background:#3a1a1a;color:#e74c3c;border:1px solid #e74c3c}
+    @keyframes fadeUp{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+  </style>
+  <div class="app">
+    <div class="header">
+      <div class="header-top">
+        <span class="title">⚔ Item Importer</span>
+        <span class="badge ${totalSelected===0?"empty":"}">${totalSelected===0?"none selected":totalSelected+" queued"}</span>
+      </div>
+      <div class="tabs">
+        <button class="tab ${activeTab==="browse"?"active":""}" data-tab="browse">Browse</button>
+        <button class="tab ${activeTab==="manage"?"active":""}" data-tab="manage">Manage Catalog</button>
+      </div>
+    </div>
+    ${activeTab==="browse" ? browsTab(items,totalSelected) : manageTab()}
+    ${notification?`<div class="notif ${notification.type}">${notification.msg}</div>`:""}
+  </div>`;
+}
+
+function browsTab(items, totalSelected) {
+  return `
+    <div class="search-bar">
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" type="text" placeholder="Search items…" value="${escHtml(searchQuery)}" id="search-input" autocomplete="off"/>
+      </div>
+    </div>
+    <div class="scroll-area">
+      ${catalog.length===0?`<div class="empty-state"><div class="empty-icon">🗡️</div><div class="empty-title">No Items Yet</div><div class="empty-sub">Go to Manage Catalog to add items.</div></div>`
+      :items.length===0?`<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">No Results</div></div>`
+      :`<div class="grid">${items.map(renderCard).join("")}</div>`}
+    </div>
+    <div class="footer">
+      <div class="footer-info">${totalSelected>0?`${totalSelected} token${totalSelected!==1?"s":""} will be placed at scene center`:"Select items above, then click Import"}</div>
+      <button class="import-btn" id="import-btn" ${totalSelected===0?"disabled":""}>✦ Import to Scene ✦</button>
+      ${totalSelected>0?`<button class="clear-btn" id="clear-btn">Clear Selection</button>`:""}
+    </div>`;
+}
+
+function renderCard(item) {
+  const qty = selected.get(item.id)||0;
+  const isSel = qty>0;
+  return `
+    <div class="card ${isSel?"selected":""}" data-id="${item.id}">
+      <div class="img-wrap">
+        <img src="${escHtml(item.url)}" alt="${escHtml(item.name)}" onerror="this.style.display='none'"/>
+        <div class="check">✓</div>
+      </div>
+      <div class="card-info">
+        <div class="card-name">${escHtml(item.name)}</div>
+        ${item.tags?`<div class="card-tags">${escHtml(item.tags)}</div>`:""}
+        ${isSel?`<div class="qty" onclick="event.stopPropagation()">
+          <button class="qty-btn" data-action="dec" data-id="${item.id}">−</button>
+          <span class="qty-num">${qty}</span>
+          <button class="qty-btn" data-action="inc" data-id="${item.id}">+</button>
+        </div>`:""}
+      </div>
+    </div>`;
+}
+
+function manageTab() {
+  return `
+    <div class="manage-area">
+      <div>
+        <div class="section-label">Add New Item</div>
+        <div class="add-form">
+          <div class="form-row"><input class="form-input" id="add-name" type="text" placeholder="Item name (e.g. Iron Sword)"/></div>
+          <div class="form-row"><input class="form-input" id="add-url" type="text" placeholder="Image URL from OBR…"/></div>
+          <div class="form-row">
+            <input class="form-input" id="add-tags" type="text" placeholder="Tags (e.g. weapon, melee)"/>
+            <button class="add-btn" id="add-btn">Add</button>
+          </div>
+          <div style="font-size:12px;color:var(--text3);font-style:italic;line-height:1.5">Tip: Right-click any image in OBR's asset dock → "Copy image address"</div>
+        </div>
+      </div>
+      <div>
+        <div class="section-label">Your Catalog (${catalog.length})</div>
+        ${catalog.length===0?`<div class="empty-state" style="padding:20px 0"><div class="empty-sub">No items yet!</div></div>`:`
+          <div class="catalog-list">
+            ${catalog.map(item=>`
+              <div class="catalog-row">
+                <img class="catalog-thumb" src="${escHtml(item.url)}" onerror="this.style.display='none'"/>
+                <div class="catalog-info">
+                  <div class="catalog-name">${escHtml(item.name)}</div>
+                  ${item.tags?`<div class="catalog-tags">🏷 ${escHtml(item.tags)}</div>`:""}
+                </div>
+                <button class="del-btn" data-delete="${item.id}">✕</button>
+              </div>`).join("")}
+          </div>`}
+      </div>
+    </div>`;
+}
+
+function attachEvents() {
+  document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>{activeTab=t.dataset.tab;render();}));
+  const s=document.getElementById("search-input");
+  if(s){s.addEventListener("input",e=>{searchQuery=e.target.value;render();});s.focus();s.setSelectionRange(s.value.length,s.value.length);}
+  document.querySelectorAll(".card").forEach(c=>c.addEventListener("click",e=>{
+    if(e.target.closest(".qty"))return;
+    const id=c.dataset.id;
+    if(selected.has(id)){selected.delete(id);}else{selected.set(id,1);}
+    render();
+  }));
+  document.querySelectorAll(".qty-btn").forEach(b=>b.addEventListener("click",e=>{
+    e.stopPropagation();
+    const id=b.dataset.id,cur=selected.get(id)||1;
+    if(b.dataset.action==="inc"){selected.set(id,Math.min(cur+1,99));}
+    else{if(cur<=1){selected.delete(id);}else{selected.set(id,cur-1);}}
+    render();
+  }));
+  const ib=document.getElementById("import-btn");
+  if(ib)ib.addEventListener("click",importSelected);
+  const cb=document.getElementById("clear-btn");
+  if(cb)cb.addEventListener("click",()=>{selected.clear();render();});
+  const ab=document.getElementById("add-btn");
+  if(ab)ab.addEventListener("click",()=>{
+    const name=document.getElementById("add-name").value.trim();
+    const url=document.getElementById("add-url").value.trim();
+    const tags=document.getElementById("add-tags").value.trim();
+    if(!name){showNotif("Please enter a name","error");return;}
+    if(!url){showNotif("Please enter a URL","error");return;}
+    catalog.push({id:uid(),name,url,tags});
+    saveCatalog(catalog);
+    showNotif(`✓ "${name}" added!`);
+    render();
+  });
+  document.querySelectorAll("[data-delete]").forEach(b=>b.addEventListener("click",()=>{
+    const id=b.dataset.delete;
+    const item=catalog.find(c=>c.id===id);
+    catalog=catalog.filter(c=>c.id!==id);
+    selected.delete(id);
+    saveCatalog(catalog);
+    showNotif(`Removed "${item?.name||"item"}"`);
+    render();
+  }));
+}
+
+OBR.onReady(()=>render());
